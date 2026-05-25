@@ -9,13 +9,9 @@ import json
 import time
 import random
 import sys
+import urllib.request
+import urllib.error
 from pathlib import Path
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    print("Install google-generativeai: pip install google-generativeai")
-    sys.exit(1)
 
 SYSTEM_PROMPT = (
     "You are Om — The Divine Architect. A polymath AI that builds anything. "
@@ -199,10 +195,24 @@ def generate_prompt(category: dict) -> str:
     return template.format(**kwargs)
 
 
-def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+def call_gemini(api_key: str, prompt: str) -> str:
+    """Call Gemini API directly via REST — no SDK needed."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.8, "maxOutputTokens": 8192}
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    resp = urllib.request.urlopen(req, timeout=120)
+    data = json.loads(resp.read().decode("utf-8"))
+    candidates = data.get("candidates", [])
+    if not candidates:
+        return ""
+    parts = candidates[0].get("content", {}).get("parts", [])
+    return "".join(p.get("text", "") for p in parts)
 
+
+def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
     generated = []
     attempts = 0
     max_attempts = count * 3
@@ -225,15 +235,9 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
         )
 
         try:
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.8,
-                    max_output_tokens=8192,
-                ),
-            )
+            response_text = call_gemini(api_key, prompt)
+            assistant_content = response_text.strip()
 
-            assistant_content = response.text.strip()
             if assistant_content.startswith("```html"):
                 assistant_content = assistant_content[7:]
             if assistant_content.startswith("```"):
@@ -256,8 +260,17 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
             generated.append(example)
             print(f"  [{len(generated)}/{count}] Generated: {new_prompt[:60]}...")
 
-            time.sleep(1.0)
+            time.sleep(2.0)
 
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+            print(f"  HTTP {e.code}: {body}")
+            if e.code == 429:
+                print("  Rate limited — waiting 30s...")
+                time.sleep(30)
+            else:
+                time.sleep(5)
+            continue
         except Exception as e:
             print(f"  Error: {e}")
             time.sleep(5.0)
