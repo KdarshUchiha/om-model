@@ -22,7 +22,7 @@ outputs/
 wandb/
 
 # Data
-training_data.jsonl
+# training_data.jsonl
 
 # Environment
 .env
