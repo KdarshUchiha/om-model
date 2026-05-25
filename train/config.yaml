@@ -1,0 +1,29 @@
+model:
+  name: "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit"
+  fallback: "unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit"
+
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+training:
+  epochs: 3
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 2e-4
+  warmup_ratio: 0.05
+  max_seq_length: 4096
+  optimizer: "adamw_8bit"
+
+output:
+  adapter_path: "./om-code-lora"
+  hub_model_id: "JohanKira/om-code-v1"
