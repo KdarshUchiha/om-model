@@ -242,6 +242,27 @@ def call_groq(api_key: str, prompt: str) -> str:
     return choices[0].get("message", {}).get("content", "")
 
 
+def call_openrouter(api_key: str, prompt: str) -> str:
+    """Call OpenRouter API with free Nemotron model."""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    payload = json.dumps({
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.8,
+        "max_tokens": 8192
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    })
+    resp = urllib.request.urlopen(req, timeout=180)
+    data = json.loads(resp.read().decode("utf-8"))
+    choices = data.get("choices", [])
+    if not choices:
+        return ""
+    return choices[0].get("message", {}).get("content", "")
+
+
 def generate_examples(api_key: str, seeds: list, count: int, output_path: str, provider: str = "gemini"):
     # Write seeds first, then append generated incrementally
     with open(output_path, "w") as f:
@@ -270,7 +291,12 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str, p
         )
 
         try:
-            response_text = call_groq(api_key, prompt) if provider == "groq" else call_gemini(api_key, prompt)
+            if provider == "openrouter":
+                response_text = call_openrouter(api_key, prompt)
+            elif provider == "groq":
+                response_text = call_groq(api_key, prompt)
+            else:
+                response_text = call_gemini(api_key, prompt)
             assistant_content = response_text.strip()
 
             if assistant_content.startswith("```html"):
@@ -321,7 +347,7 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str, p
 def main():
     parser = argparse.ArgumentParser(description="Generate Om-Code training data")
     parser.add_argument("api_key", help="API key (Gemini or Groq)")
-    parser.add_argument("--provider", default="gemini", choices=["gemini", "groq"], help="API provider")
+    parser.add_argument("--provider", default="gemini", choices=["gemini", "groq", "openrouter"], help="API provider")
     parser.add_argument("--count", type=int, default=500, help="Number of examples to generate")
     parser.add_argument("--seeds", default=str(Path(__file__).parent / "seed_examples.jsonl"), help="Path to seed examples")
     parser.add_argument("--output", default=str(Path(__file__).parent / "training_data.jsonl"), help="Output path")
