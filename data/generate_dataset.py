@@ -188,10 +188,19 @@ def generate_prompt(category: dict) -> str:
     kwargs = {}
     for key in template.split("{")[1:]:
         field = key.split("}")[0]
+        # Try singular, then plural, then plural with 's'
         if field in category:
             kwargs[field] = random.choice(category[field])
+        elif field + "s" in category:
+            kwargs[field] = random.choice(category[field + "s"])
+        elif field + "es" in category:
+            kwargs[field] = random.choice(category[field + "es"])
+        elif field + "_descs" in category:
+            kwargs[field] = random.choice(category[field + "_descs"])
         else:
-            kwargs[field] = "something cool"
+            # Pick from any list in the category
+            lists = [v for v in category.values() if isinstance(v, list)]
+            kwargs[field] = random.choice(random.choice(lists)) if lists else "interactive"
     return template.format(**kwargs)
 
 
@@ -212,14 +221,40 @@ def call_gemini(api_key: str, prompt: str) -> str:
     return "".join(p.get("text", "") for p in parts)
 
 
-def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
-    generated = []
+def call_groq(api_key: str, prompt: str) -> str:
+    """Call Groq API (OpenAI-compatible)."""
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    payload = json.dumps({
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.8,
+        "max_tokens": 8192
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    })
+    resp = urllib.request.urlopen(req, timeout=120)
+    data = json.loads(resp.read().decode("utf-8"))
+    choices = data.get("choices", [])
+    if not choices:
+        return ""
+    return choices[0].get("message", {}).get("content", "")
+
+
+def generate_examples(api_key: str, seeds: list, count: int, output_path: str, provider: str = "gemini"):
+    # Write seeds first, then append generated incrementally
+    with open(output_path, "w") as f:
+        for seed in seeds:
+            f.write(json.dumps(seed) + "\n")
+
+    generated = 0
     attempts = 0
-    max_attempts = count * 3
+    max_attempts = count * 4
 
-    print(f"Generating {count} examples...")
+    print(f"Generating {count} examples (writing incrementally to {output_path})...")
 
-    while len(generated) < count and attempts < max_attempts:
+    while generated < count and attempts < max_attempts:
         attempts += 1
         category = random.choice(CATEGORIES)
         new_prompt = generate_prompt(category)
@@ -235,7 +270,7 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
         )
 
         try:
-            response_text = call_gemini(api_key, prompt)
+            response_text = call_groq(api_key, prompt) if provider == "groq" else call_gemini(api_key, prompt)
             assistant_content = response_text.strip()
 
             if assistant_content.startswith("```html"):
@@ -257,17 +292,20 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
                     {"role": "assistant", "content": assistant_content},
                 ]
             }
-            generated.append(example)
-            print(f"  [{len(generated)}/{count}] Generated: {new_prompt[:60]}...")
+            with open(output_path, "a") as f:
+                f.write(json.dumps(example) + "\n")
+            generated += 1
+            print(f"  [{generated}/{count}] Generated: {new_prompt[:60]}...")
 
             time.sleep(2.0)
 
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:200]
-            print(f"  HTTP {e.code}: {body}")
-            if e.code == 429:
-                print("  Rate limited — waiting 30s...")
-                time.sleep(30)
+            print(f"  HTTP {e.code}: {body[:100]}")
+            if e.code in (429, 503):
+                wait = 30 if e.code == 429 else 15
+                print(f"  {'Rate limited' if e.code==429 else 'Server busy'} — waiting {wait}s...")
+                time.sleep(wait)
             else:
                 time.sleep(5)
             continue
@@ -276,19 +314,14 @@ def generate_examples(api_key: str, seeds: list, count: int, output_path: str):
             time.sleep(5.0)
             continue
 
-    with open(output_path, "w") as f:
-        for seed in seeds:
-            f.write(json.dumps(seed) + "\n")
-        for ex in generated:
-            f.write(json.dumps(ex) + "\n")
-
-    total = len(seeds) + len(generated)
-    print(f"\nDone! Wrote {total} examples ({len(seeds)} seeds + {len(generated)} generated) to {output_path}")
+    total = len(seeds) + generated
+    print(f"\nDone! Wrote {total} examples ({len(seeds)} seeds + {generated} generated) to {output_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Om-Code training data")
-    parser.add_argument("api_key", help="Gemini API key")
+    parser.add_argument("api_key", help="API key (Gemini or Groq)")
+    parser.add_argument("--provider", default="gemini", choices=["gemini", "groq"], help="API provider")
     parser.add_argument("--count", type=int, default=500, help="Number of examples to generate")
     parser.add_argument("--seeds", default=str(Path(__file__).parent / "seed_examples.jsonl"), help="Path to seed examples")
     parser.add_argument("--output", default=str(Path(__file__).parent / "training_data.jsonl"), help="Output path")
@@ -296,8 +329,9 @@ def main():
 
     seeds = load_seeds(args.seeds)
     print(f"Loaded {len(seeds)} seed examples")
+    print(f"Provider: {args.provider}")
 
-    generate_examples(args.api_key, seeds, args.count, args.output)
+    generate_examples(args.api_key, seeds, args.count, args.output, args.provider)
 
 
 if __name__ == "__main__":
